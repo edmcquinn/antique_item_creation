@@ -44,6 +44,71 @@ Upload your main CSV file to automatically generate the necessary import files f
 Ensure your uploaded CSV contains the following columns: `SKU`, `Fragrance - Vessel Description`, `Retail Price`, `End Weight (lbs)`, `Quantity`, `Burn Time`, `Height`, and `Width`.
 """)
 
+# --- Instructions Expander ---
+with st.expander("Show/Hide Instructions"):
+    st.markdown("""
+    ### Antique Item Creation Steps
+
+    ---
+
+    #### **Requirements**
+    - The antique spreadsheet from Dropbox, usually shared by Emily.
+    - A local copy of the spreadsheet saved in CSV format.
+
+    ---
+
+    #### **File Preparation & Generation**
+    1.  **Download** the antiques file from Dropbox.
+    2.  Emily usually has some additional calculation data to the right and below the main item data. This **must be deleted** before you save the sheet as a `.csv` file.
+    3.  **Save** the cleaned sheet as a `.csv` file in a memorable location on your computer.
+    4.  Use the **"Choose your source CSV file"** button below to upload the `.csv` file you just saved.
+    5.  The app will generate three new files for you to download:
+        - `netsuite_import_MM_DD_YY.csv`
+        - `shopify_import_MM_DD_YY.csv`
+        - `inventory_adjustment_MM_DD_YY.csv`
+
+    ---
+
+    #### **1. NetSuite Item Import**
+    > **IMPORTANT**: This must be completed successfully *before* starting the Shopify import.
+    1.  In NetSuite, navigate to **Setup > Import/Export > Saved CSV Imports**.
+    2.  Find and open import **ID 153** (Antiques Import - 06_17_2022).
+    3.  Under "Import File," click **Select** and choose your `netsuite_import_MM_DD_YY.csv` file. Click **Next**.
+    4.  Set the Import Type to **ADD** and click **Next**.
+    5.  On the mapping page, drag **`itemid`** from the left panel to the **Item Name/Number** field on the right. Click **Next**.
+    6.  On the final page, click **Run** to start the import.
+    7.  After the job completes, verify that the number of records imported matches the number of items from your file.
+
+    ---
+
+    #### **2. Shopify Product Import**
+    1.  In Shopify, go to **Products** and click the **Import** button in the top right.
+    2.  Add your `shopify_import_MM_DD_YY.csv` file.
+    3.  **Uncheck** the box for "Publish new products to all sales channels."
+    4.  **Check** the box for "Overwrite products with matching handles."
+    5.  Click **Upload and preview**.
+    6.  Review the preview to ensure the data looks correct, then click **Import Products**.
+
+    ---
+
+    #### **3. NetSuite Inventory Adjustment**
+    1.  In NetSuite, navigate to **Setup > Import/Export > Saved CSV Imports**.
+    2.  Find and open the **Invadjust 04_18 antiques import**.
+    3.  Choose your `inventory_adjustment_MM_DD_YY.csv` file and click **Next**.
+    4.  Under Import Options, select **ADD** and click **Next**.
+    5.  On the mapping page, click the **date** field to update it to the current date, then click **Next**.
+    6.  Click **Run** to start the import. Monitor the import job status to ensure it completes.
+
+    ---
+
+    #### **4. Celigo Troubleshooting**
+    > This is only needed if items were imported out of sequence or if inventory quantities appear incorrect. Celigo typically syncs automatically every 15-30 minutes.
+    1.  In Celigo, navigate to the **Shopify - NetSuite IO** integration tile.
+    2.  Go to the **Inventory** flows section.
+    3.  Run the **Shopify Product ID to NetSuite Item Mass Update** flow. You may need to set the start date back to ensure all new items are included.
+    4.  Once that completes, run the **NetSuite Inventory to Shopify Inventory Add/Update** flow to sync the adjusted quantities to Shopify.
+    """)
+
 # --- File Uploader ---
 uploaded_file = st.file_uploader("Choose your source CSV file", type="csv")
 
@@ -53,14 +118,13 @@ if uploaded_file is not None:
         antique_import = pd.read_csv(uploaded_file)
 
         # ####################################################################
-        # ## NEW: Data Cleaning and Pre-processing ##
+        # ## Data Cleaning and Pre-processing ##
         # ####################################################################
         
         # Strip leading/trailing whitespace from all column headers
         antique_import.columns = antique_import.columns.str.strip()
 
         # List of columns that should be numeric
-        # Fixed potential error by checking for 'End Weight' as well as 'End Weight (lbs)'
         numeric_cols_to_check = [
             'Retail Price', 'End Weight (lbs)', 'Quantity', 'Burn Time', 
             'End Weight', 'Height', 'Width'
@@ -97,10 +161,16 @@ if uploaded_file is not None:
 
         # --- Data Processing Loop ---
         for index, row in antique_import.iterrows():
+            # Get the original description from the uploaded file
+            original_description = str(row['Fragrance - Vessel Description'])
+
+            # Create a standardized name for NetSuite by replacing '|' with ' - '
+            netsuite_display_name = ' - '.join([part.strip() for part in original_description.split('|')])
+
             # Create NetSuite Import row
             netsuite_import.at[index, 'externalid'] = row['SKU']
             netsuite_import.at[index, 'itemid'] = row['SKU']
-            netsuite_import.at[index, 'Display Name'] = row['Fragrance - Vessel Description']
+            netsuite_import.at[index, 'Display Name'] = netsuite_display_name
             netsuite_import.at[index, 'unitstype'] = "Quantity"
             netsuite_import.at[index, 'location'] = 'ACC 1611'
             netsuite_import.at[index, 'track landed cost'] = 'FALSE'
@@ -121,7 +191,7 @@ if uploaded_file is not None:
             # Create NetSuite Inventory Adjustment row
             sku_str = str(row['SKU'])
             netsuite_inventory_adjustment.at[index, 'External ID'] = 'Antique Restock ' + sku_str[-6:]
-            netsuite_inventory_adjustment.at[index, 'Full name'] = f"{row['SKU']} {row['Fragrance - Vessel Description']}"
+            netsuite_inventory_adjustment.at[index, 'Full name'] = f"{row['SKU']} {netsuite_display_name}"
             netsuite_inventory_adjustment.at[index, 'Account'] = 325
             netsuite_inventory_adjustment.at[index, 'Class'] = 'Operations : Production'
             netsuite_inventory_adjustment.at[index, 'Department'] = 'Retail'
@@ -133,14 +203,17 @@ if uploaded_file is not None:
 
             # Create Shopify Import row
             shopify_import.at[index, 'Handle'] = sku_str.replace(' ', '')
-            shopify_import.at[index, 'Title'] = row['Fragrance - Vessel Description']
+            # Use the original, unmodified description for the Shopify Title
+            shopify_import.at[index, 'Title'] = original_description
             shopify_import.at[index, 'Body (HTML)'] = f"""
                 <p data-mce-fragment="1">Approximate Burn Time: {row['Burn Time']} hours</p>
                 <p data-mce-fragment="1">Weight: {row['End Weight']} oz</p>
                 <p data-mce-fragment="1">Dimensions: {row.get('Height', 'N/A')}" Height x {row.get('Width', 'N/A')}" Width</p>
             """
             
-            fragrance = str(row['Fragrance - Vessel Description']).split('-')[0].strip()
+            # For tag generation, temporarily replace '|' with '-' to correctly parse the fragrance
+            parseable_name_for_tags = original_description.replace('|', '-')
+            fragrance = parseable_name_for_tags.split('-')[0].strip()
             smells_like = fragrance.replace(' ', '-').lower()
             shopify_import.at[index, 'Tags'] = f"_tab2_antique-restock-101,antique{sku_str[-6:]},_tab1_{smells_like}-smells-like, {fragrance}"
             
